@@ -23,6 +23,8 @@ local PAD_DIR = {
 local DEFAULTS = {
   enabled = true,      -- arrange the party frames at all
   scale = 1.2,         -- size of the party frames
+  width = 0,           -- frame width  (0 = Blizzard's size; raid-style party frames only)
+  height = 0,          -- frame height (0 = Blizzard's size; raid-style party frames only)
   gap = 4,             -- space between frames
   slot1 = "auto", slot2 = "auto", slot3 = "auto", slot4 = "auto", -- where each party member goes
   hideExtras = true,   -- hide the "Party" title and other leftovers
@@ -292,6 +294,28 @@ local function SafeRestyle(frame) pcall(Restyle, frame) end
 if CompactUnitFrame_UpdateName then hooksecurefunc("CompactUnitFrame_UpdateName", SafeRestyle) end
 if UnitFrame_Update then hooksecurefunc("UnitFrame_Update", SafeRestyle) end
 
+-- Own width/height for raid-style frames. Blizzard sets the size again whenever it refreshes a
+-- frame, so we remember its size ("natural") and ours ("sized") to tell the two apart and to be
+-- able to put Blizzard's size back when the option returns to 0.
+local natural = setmetatable({}, { __mode = "k" })
+local sized = setmetatable({}, { __mode = "k" })
+local function Resize(f)
+  local cw, ch = f:GetWidth(), f:GetHeight()
+  if not (Num(cw) and Num(ch) and cw > 0 and ch > 0) then return end
+  local mine = sized[f]
+  if not (mine and math.abs(cw - mine[1]) < 0.5 and math.abs(ch - mine[2]) < 0.5) then
+    natural[f] = { cw, ch } -- not the size we set: Blizzard's own
+  end
+  local nat = natural[f]
+  local ow, oh = Opt("width"), Opt("height")
+  local tw = ow > 0 and ow or (nat and nat[1]) or cw
+  local th = oh > 0 and oh or (nat and nat[2]) or ch
+  if math.abs(cw - tw) > 0.5 or math.abs(ch - th) > 0.5 then
+    f:SetSize(tw, th)
+    sized[f] = { tw, th }
+  end
+end
+
 local lastPlan = {}
 local knownSize = setmetatable({}, { __mode = "k" }) -- kept here, not on Blizzard's frames (taint)
 local function Apply()
@@ -309,6 +333,7 @@ local function Apply()
     -- Offsets below are in the frame's own (scaled) units, so the diamond spacing scales with it.
     local scale = Opt("scale")
     if Num(f:GetScale()) and math.abs(f:GetScale() - scale) > 0.001 then f:SetScale(scale) end
+    if mode == "raid-style" then Resize(f) end
     if dir then
       local w, h = f:GetWidth(), f:GetHeight()
       -- hidden/unknown size: use the last size we saw for this frame (or a sane default)
@@ -422,6 +447,12 @@ ev:SetScript("OnEvent", function(_, event)
     end
     HookMethods(CompactPartyFrame, "UpdateLayout", "RefreshMembers")
     HookMethods(PartyFrame, "Layout", "UpdatePaddingAndLayout", "UpdatePartyFrames")
+    if CompactUnitFrame_UpdateAll then
+      -- Blizzard puts its own size back on a frame here; re-apply ours right away
+      hooksecurefunc("CompactUnitFrame_UpdateAll", function(frame)
+        if isMember[frame] and (Opt("width") > 0 or Opt("height") > 0) then Now() end
+      end)
+    end
     if CompactPartyFrame_Generate then
       -- CompactPartyFrame may be created later (when raid-style frames are first used)
       hooksecurefunc("CompactPartyFrame_Generate", function()
@@ -470,6 +501,10 @@ local OPTIONS = {
     tip = "Turn the whole addon on or off. After turning it off, /reload puts Blizzard's own layout back." },
   { key = "scale", type = "number", min = 0.5, max = 3, step = 0.05, name = "Frame size",
     tip = "Size of the party frames (1 = Blizzard's size)." },
+  { key = "width", type = "number", min = 0, max = 250, step = 1, lowest = 30, name = "Frame width",
+    tip = "0 = Blizzard's width. Raid-style party frames only. If a frame is refreshed during combat it shows Blizzard's size until the fight ends." },
+  { key = "height", type = "number", min = 0, max = 150, step = 1, lowest = 15, name = "Frame height",
+    tip = "0 = Blizzard's height. Raid-style party frames only. If a frame is refreshed during combat it shows Blizzard's size until the fight ends." },
   { key = "gap", type = "number", min = 0, max = 60, step = 1, name = "Gap between frames" },
   { key = "freeze", type = "bool", name = "Keep the layout in combat",
     tip = "Frames can't be moved in combat, so this stops Blizzard from re-stacking them mid-fight. Members who join or leave during a fight show up after it." },
@@ -524,6 +559,7 @@ local function Clean(o, v)
     if n then
       n = math.min(o.max, math.max(o.min, n))
       n = math.floor(n / o.step + 0.5) * o.step
+      if o.lowest and n > 0 and n < o.lowest then n = o.lowest end -- 0 means "Blizzard's size"
       return true, tonumber(("%.2f"):format(n))
     end
   elseif o.type == "choice" then
@@ -552,7 +588,10 @@ end
 
 local function Usage(o)
   if o.type == "bool" then return "on|off" end
-  if o.type == "number" then return o.min .. "-" .. o.max end
+  if o.type == "number" then
+    if o.lowest then return "0|" .. o.lowest .. "-" .. o.max end
+    return o.min .. "-" .. o.max
+  end
   local t = {}
   for _, c in ipairs(o.choices) do t[#t + 1] = c[1] end
   return table.concat(t, "|")
@@ -583,7 +622,10 @@ BuildPanel = function()
           local opts = Settings.CreateSliderOptions(o.min, o.max, o.step)
           if MinimalSliderWithSteppersMixin and MinimalSliderWithSteppersMixin.Label then
             local fmt = o.step < 1 and "%.2f" or "%d"
-            opts:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right, function(v) return fmt:format(v) end)
+            opts:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right, function(v)
+              if o.lowest and v < 1 then return "Default" end
+              return fmt:format(v)
+            end)
           end
           Settings.CreateSlider(category, setting, opts, o.tip)
         else

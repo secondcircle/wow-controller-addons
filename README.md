@@ -43,6 +43,8 @@ Both addons have a page under **Options > AddOns**, and every setting also has a
 |---|---|---|
 | `enabled on\|off` | on | Whole addon on or off (`/reload` after turning off restores Blizzard's layout) |
 | `scale 0.5-3` | 1.2 | Size of the party frames |
+| `width 0\|30-250` | 0 | Frame width; 0 = Blizzard's width (raid-style party frames only) |
+| `height 0\|15-150` | 0 | Frame height; 0 = Blizzard's height (raid-style party frames only) |
 | `gap 0-60` | 4 | Space between frames |
 | `freeze on\|off` | on | Keep the layout during combat |
 | `hideextras on\|off` | on | Hide the "Party" title and other leftovers |

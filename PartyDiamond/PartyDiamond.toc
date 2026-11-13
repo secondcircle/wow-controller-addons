@@ -2,7 +2,7 @@
 ## Title: Party Diamond
 ## Notes: Moves the normal party frames into a diamond (up/right/down/left) matching the face buttons you target them with.
 ## Author: secondcircle
-## Version: 2.1.0
+## Version: 2.2.0
 ## X-Website: https://github.com/secondcircle/wow-controller-addons
 ## SavedVariables: PartyDiamondDB
 
