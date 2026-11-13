@@ -1,0 +1,7 @@
+# Only the shared addons are published. Everything else in this folder stays private.
+/*
+!/.gitignore
+!/README.md
+!/release.ps1
+!/PartyDiamond/
+!/SoftTarget/

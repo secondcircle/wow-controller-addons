@@ -1,0 +1,9 @@
+## Interface: 16001
+## Title: SoftTarget
+## Notes: Controller soft targeting: LB + party button picks an ally for the next helpful spell without changing your target. Press the same ally twice to really target them.
+## Author: secondcircle
+## Version: 1.1.0
+## X-Website: https://github.com/secondcircle/wow-controller-addons
+## SavedVariables: SoftTargetDB
+
+SoftTarget.lua
