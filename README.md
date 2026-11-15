@@ -74,6 +74,7 @@ With raid-style party frames you are in the centre of the diamond. With the stan
 | `self on\|off` | on | LB + yourself is a soft pick (off = normal targeting) |
 | `pet on\|off` | on | LB + your pet is a soft pick (off = normal targeting) |
 | `items on\|off` | on | Helpful items on the action bar (bandages) use the soft target |
+| `macros on\|off` | on | Macros on the action bar: `/cast` and `/use` lines with a helpful spell or item go to the soft target |
 | `color rrggbb` | ffd100 | Soft target border colour |
 | `size 1-10` | 3 | Soft target border thickness |
 | `label on\|off` | on | Show "Soft: name" on screen when the ally has no frame to put a border on |
@@ -82,7 +83,7 @@ With raid-style party frames you are in the centre of the diamond. With the stan
 ## Good to know
 
 - **Combat:** the game does not let addons move party frames or change secure settings in combat. Changes you make in combat apply when the fight ends.
-- **SoftTarget only affects plain spells and items on the gamepad action bars.** Macros ignore it. Assist (target of target) and the raid marker button are left alone.
+- **SoftTarget affects spells, items and macros on the gamepad action bars.** In a macro, `/cast` and `/use` lines with a helpful spell or item are sent to the soft target; lines that already have `[conditions]`, and `/castsequence`, are left as written. Assist (target of target) and the raid marker button are left alone.
 - **SoftTarget's soft target is used at the press**, not when the cast lands. With sticky off, a press that fails (out of range, no mana) still uses it up. That is a limit of what the game allows.
 - If you ever see an "action blocked" message, turn these addons off first to check whether they are the cause, and please open an issue.
 

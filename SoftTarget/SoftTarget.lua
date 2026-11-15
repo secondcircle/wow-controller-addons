@@ -16,6 +16,9 @@
 --  * Action buttons pass their "unit" attribute to UseAction(action, unit).
 --    A wrapped OnClick sets unit = soft ally for helpful spells only, and the
 --    post-snippet clears it again.
+--  * Macros ignore that unit. For a macro on the bar, a copy of its text
+--    with [@unit] added to its helpful /cast and /use lines is prepared out
+--    of combat; at the press the button runs that text instead.
 --  * Addon code cannot change secure state in combat, so the soft target is
 --    used up at the PRESS of a helpful spell, not when the cast lands.
 
@@ -37,6 +40,7 @@ local DEFAULTS = {
 	softSelf = true,          -- LB + self is a soft pick too
 	softPet = true,           -- LB + pet is a soft pick too
 	items = true,             -- helpful items (bandages...) use the soft target
+	macros = true,            -- macros with helpful /cast or /use lines use the soft target
 	hardBorder = false,       -- show Blizzard's border on your real target's party frame
 	borderColor = "ffffd100", -- soft target border colour (aarrggbb)
 	borderSize = 3,           -- soft target border thickness
@@ -119,7 +123,7 @@ local ACTION_PRE = [[
 	if control:GetAttribute("soft-friendwins") and UnitExists("target") and PlayerCanAssist("target") then
 		return
 	end
-	local helpful
+	local helpful, macro
 	local t = self:GetAttribute("type")
 	if t == "spell" then
 		local s = self:GetAttribute("spell")
@@ -141,22 +145,36 @@ local ACTION_PRE = [[
 				helpful = IsSpellHelpful(sid)
 			elseif kind == "item" and sid and control:GetAttribute("soft-items") then
 				helpful = IsHelpfulItem(sid)
+			elseif kind == "macro" then
+				-- text prepared out of combat (RefreshMacros), if this
+				-- macro has helpful lines
+				macro = control:GetAttribute("soft-macro-" .. slot)
 			end
 		end
 	end
-	if helpful and UnitExists(u) and PlayerCanAssist(u) then
-		self:SetAttribute("unit", u)
+	if (helpful or macro) and UnitExists(u) and PlayerCanAssist(u) then
+		if macro then
+			-- run the prepared text instead of the bar's macro, this press only
+			self:SetAttribute("type", "macro")
+			self:SetAttribute("macrotext", gsub(macro, "@SOFTUNIT", "@" .. u))
+		else
+			self:SetAttribute("unit", u)
+		end
 		if down and not control:GetAttribute("soft-sticky") then
 			control:SetAttribute("soft-unit", nil)
 			control:CallMethod("SoftChanged", nil)
 		end
-		return nil, "clear"
+		return nil, macro and "macro" or "clear"
 	end
 ]]
 
--- OnClick (after): never leave a unit on the button.
+-- OnClick (after): never leave a unit (or our macro text) on the button.
 local ACTION_POST = [[
 	self:SetAttribute("unit", nil)
+	if message == "macro" then
+		self:SetAttribute("type", "action")
+		self:SetAttribute("macrotext", nil)
+	end
 ]]
 
 ---------------------------------------------------------------------------
@@ -266,6 +284,104 @@ local function HideHardBorder()
 end
 
 ---------------------------------------------------------------------------
+-- Macros
+--
+-- A macro on the bar ignores the button's unit, so the secure code runs a
+-- rewritten copy of its text instead. The copies are made here, out of
+-- combat, one header attribute per action slot ("soft-macro-<slot>").
+-- Only /cast and /use lines with a helpful spell or item and no [conditions]
+-- of their own are changed; "@SOFTUNIT" is swapped for the ally at the press.
+---------------------------------------------------------------------------
+
+local MACRO_LIMIT = 255 -- stay inside the normal macro length
+local macroSlots = {}   -- slot -> text now on the header
+local pendingMacros = false
+local macroQueued = false
+
+local function Truthy(ok, v)
+	return ok and v and not IsSecret(v)
+end
+
+local function HelpfulName(cmd, what)
+	what = what:gsub("^!", ""):gsub("%s*%(.-%)%s*$", ""):match("^%s*(.-)%s*$")
+	if what == "" or tonumber(what) then return false end
+	if C_Spell and C_Spell.IsSpellHelpful and Truthy(pcall(C_Spell.IsSpellHelpful, what)) then return true end
+	if IsHelpfulSpell and Truthy(pcall(IsHelpfulSpell, what)) then return true end
+	if cmd == "/use" then
+		if C_Item and C_Item.IsHelpfulItem and Truthy(pcall(C_Item.IsHelpfulItem, what)) then return true end
+		if IsHelpfulItem and Truthy(pcall(IsHelpfulItem, what)) then return true end
+	end
+	return false
+end
+
+-- macro body -> text with the placeholder unit, or nil if nothing to change
+local function SoftMacro(body)
+	if type(body) ~= "string" or IsSecret(body) then return end
+	local out, changed = {}, 0
+	for line in (body .. "\n"):gmatch("(.-)\r?\n") do
+		local cmd, rest = line:match("^%s*(/%a+)%s+(.+)$")
+		local c = cmd and cmd:lower()
+		if (c == "/cast" or c == "/use") and rest:sub(1, 1) ~= "[" and not rest:find(";", 1, true)
+			and HelpfulName(c, rest) then
+			line = cmd .. " [@SOFTUNIT] " .. rest
+			changed = changed + 1
+		end
+		out[#out + 1] = line
+	end
+	if changed == 0 then return end
+	local text = table.concat(out, "\n"):gsub("%s+$", "")
+	-- "@SOFTUNIT" becomes "@player" / "@party1" (2 shorter) at the press
+	if #text - 2 * changed > MACRO_LIMIT then return end
+	return text
+end
+
+local function SlotMacro(slot)
+	if GetActionInfo(slot) ~= "macro" then return end
+	local getText = (C_ActionBar and C_ActionBar.GetActionText) or GetActionText
+	local name = getText and getText(slot)
+	if type(name) ~= "string" or IsSecret(name) or name == "" then return end
+	local _, _, body = GetMacroInfo(name)
+	return SoftMacro(body)
+end
+
+local function RefreshMacros()
+	if not db then return end
+	if InCombatLockdown() then
+		pendingMacros = true
+		return
+	end
+	pendingMacros = false
+	local found = {}
+	if Opt("on") and Opt("macros") then
+		for slot = 1, 180 do
+			local ok, text = pcall(SlotMacro, slot)
+			if ok and text then found[slot] = text end
+		end
+	end
+	for slot, old in pairs(macroSlots) do
+		if found[slot] ~= old then
+			header:SetAttribute("soft-macro-" .. slot, nil)
+			macroSlots[slot] = nil
+		end
+	end
+	for slot, text in pairs(found) do
+		if macroSlots[slot] ~= text then
+			header:SetAttribute("soft-macro-" .. slot, text)
+			macroSlots[slot] = text
+		end
+	end
+end
+
+local function QueueMacros()
+	if macroQueued then return end
+	macroQueued = true
+	C_Timer.After(0.3, function()
+		macroQueued = false
+		RefreshMacros()
+	end)
+end
+
+---------------------------------------------------------------------------
 -- Setup
 ---------------------------------------------------------------------------
 
@@ -289,6 +405,7 @@ local function ApplySettings()
 		currentUnit = nil
 		ShowBorder(nil)
 	end
+	RefreshMacros()
 end
 
 local function IsStaticTargetBar(bar)
@@ -375,6 +492,11 @@ ev:RegisterEvent("PLAYER_LOGIN")
 ev:RegisterEvent("PLAYER_ENTERING_WORLD")
 ev:RegisterEvent("PLAYER_REGEN_ENABLED")
 ev:RegisterEvent("GROUP_ROSTER_UPDATE")
+-- macros on the bar: rebuild their soft copies when the bar, the macros or
+-- the known spells change
+ev:RegisterEvent("ACTIONBAR_SLOT_CHANGED")
+ev:RegisterEvent("UPDATE_MACROS")
+ev:RegisterEvent("SPELLS_CHANGED")
 ev:SetScript("OnEvent", function(_, event)
 	if event == "PLAYER_LOGIN" then
 		SoftTargetDB = SoftTargetDB or {}
@@ -385,6 +507,14 @@ ev:SetScript("OnEvent", function(_, event)
 		end
 	end
 	if not db then return end
+
+	if event == "ACTIONBAR_SLOT_CHANGED" or event == "UPDATE_MACROS" or event == "SPELLS_CHANGED" then
+		QueueMacros()
+		return
+	end
+	if event == "PLAYER_ENTERING_WORLD" or pendingMacros then
+		QueueMacros()
+	end
 
 	HideHardBorder()
 
@@ -430,6 +560,8 @@ local OPTIONS = {
 		tip = "Off: LB + pet targets your pet normally." },
 	{ key = "items", cmd = "items", type = "bool", name = "Helpful items use the soft target",
 		tip = "Bandages and other helpful items on the action bar." },
+	{ key = "macros", cmd = "macros", type = "bool", name = "Macros use the soft target",
+		tip = "Macros on the action bar: /cast and /use lines with a helpful spell or item go to the soft target. Lines that already have [conditions] are left alone." },
 
 	{ header = "Look" },
 	{ key = "borderColor", cmd = "color", type = "color", name = "Soft target border colour" },
@@ -598,11 +730,14 @@ SlashCmdList.SOFTTARGET = function(msg)
 	else
 		if not setupDone and not InCombatLockdown() then pcall(Setup) end
 		local c = header.counts or {}
-		Print(("%s, sticky %s. Hooked %d targeting buttons and %d action buttons%s. Soft target: %s"):format(
+		local nMacros = 0
+		for _ in pairs(macroSlots) do nMacros = nMacros + 1 end
+		Print(("%s, sticky %s. Hooked %d targeting buttons and %d action buttons%s. Macros on the bar using the soft target: %d. Soft target: %s"):format(
 			Opt("on") and "on" or "off",
 			Opt("keep") and "on" or "off",
 			c.friendly or 0, c.action or 0,
 			setupDone and "" or " (NOT set up - gamepad bars not found?)",
+			nMacros,
 			currentUnit or "none"))
 		Print("/soft config for options, /soft help for commands.")
 	end
