@@ -405,12 +405,21 @@ local function RefreshMacros()
 	local found, foundAlways = {}, {}
 	if Opt("on") then
 		local always, macrosOn = AlwaysSet(), Opt("macros")
-		for slot = 1, 180 do
-			local ok, text, isAlways = pcall(SlotSoft, slot, always, macrosOn)
-			if ok then
-				if text then found[slot] = text end
-				if isAlways then foundAlways[slot] = true end
+		local function Scan(first, last)
+			for slot = first, last do
+				local ok, text, isAlways = pcall(SlotSoft, slot, always, macrosOn)
+				if ok then
+					if text then found[slot] = text end
+					if isAlways then foundAlways[slot] = true end
+				end
 			end
+		end
+		Scan(1, 180)
+		-- The gamepad bars keep their actions in their own storage slots,
+		-- after the normal ones (3 pages of 32, for each stance bar).
+		local ok, first = pcall(function() return C_GamepadUI.GetFirstGamepadActionStorageSlotIndex() end)
+		if ok and type(first) == "number" and not IsSecret(first) then
+			Scan(math.max(first, 181), first + 96 * 6 - 1)
 		end
 	end
 	SyncSlots("soft-macro-", macroSlots, found)
