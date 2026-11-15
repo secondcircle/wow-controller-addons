@@ -37,6 +37,7 @@ local DEFAULTS = {
 	keep = true,              -- sticky: keep the soft target after a cast
 	again = "target",         -- LB + the same ally again: target | clear | keep
 	friendWins = true,        -- a friendly real target beats the soft target
+	outsiderWins = true,      -- a friendly real target who is not in your group always beats it
 	softSelf = true,          -- LB + self is a soft pick too
 	softPet = true,           -- LB + pet is a soft pick too
 	items = true,             -- helpful items (bandages...) use the soft target
@@ -154,8 +155,16 @@ local ACTION_PRE = [[
 	end
 	-- A friendly real target wins over the soft target (optional), except
 	-- for the "always" spells (dispels).
-	if not always and control:GetAttribute("soft-friendwins") and UnitExists("target") and PlayerCanAssist("target") then
-		return
+	if UnitExists("target") and PlayerCanAssist("target") then
+		-- A friendly real target from outside the group beats the soft
+		-- target for every spell (optional).
+		if control:GetAttribute("soft-outsider") and not UnitPlayerOrPetInParty("target")
+			and not UnitPlayerOrPetInRaid("target") then
+			return
+		end
+		if not always and control:GetAttribute("soft-friendwins") then
+			return
+		end
 	end
 	if (helpful or macro) and UnitExists(u) and PlayerCanAssist(u) then
 		if macro then
@@ -450,6 +459,7 @@ local function ApplySettings()
 	header:SetAttribute("soft-sticky", Opt("keep") and true or nil)
 	header:SetAttribute("soft-again", Opt("again"))
 	header:SetAttribute("soft-friendwins", Opt("friendWins") and true or nil)
+	header:SetAttribute("soft-outsider", Opt("outsiderWins") and true or nil)
 	header:SetAttribute("soft-self", Opt("softSelf") and true or nil)
 	header:SetAttribute("soft-pet", Opt("softPet") and true or nil)
 	header:SetAttribute("soft-items", Opt("items") and true or nil)
@@ -608,6 +618,8 @@ local OPTIONS = {
 		tip = "What a second press on the ally who is already your soft target does." },
 	{ key = "friendWins", cmd = "friendwins", type = "bool", name = "Friendly target beats the soft target",
 		tip = "On: while your real target is friendly, helpful spells go to them and the soft target waits. Off: the soft target always gets them." },
+	{ key = "outsiderWins", cmd = "outsider", type = "bool", name = "Friendly target outside your group beats the soft target",
+		tip = "On: while your real target is a friendly player or NPC who is not in your party or raid, every helpful spell (dispels too) goes to them. Targeting yourself counts as well." },
 	{ key = "always", cmd = "always", type = "text", name = "Spells that always use the soft target",
 		tip = "Spell names separated by commas (\"none\" for no spells). These go to the soft target even while your real target is friendly." },
 	{ key = "softSelf", cmd = "self", type = "bool", name = "Soft-pick yourself",
