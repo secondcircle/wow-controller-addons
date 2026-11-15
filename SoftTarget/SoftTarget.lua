@@ -41,6 +41,8 @@ local DEFAULTS = {
 	softPet = true,           -- LB + pet is a soft pick too
 	items = true,             -- helpful items (bandages...) use the soft target
 	macros = true,            -- macros with helpful /cast or /use lines use the soft target
+	-- spells that go to the soft target even when your real target is friendly
+	always = "dispel magic, cure disease, abolish disease, purify, cleanse, remove curse, remove lesser curse, cure poison, abolish poison",
 	hardBorder = false,       -- show Blizzard's border on your real target's party frame
 	borderColor = "ffffd100", -- soft target border colour (aarrggbb)
 	borderSize = 3,           -- soft target border thickness
@@ -119,11 +121,7 @@ local ACTION_PRE = [[
 	if not u or not control:GetAttribute("soft-on") then
 		return
 	end
-	-- A friendly real target wins over the soft target (optional).
-	if control:GetAttribute("soft-friendwins") and UnitExists("target") and PlayerCanAssist("target") then
-		return
-	end
-	local helpful, macro
+	local helpful, macro, always
 	local t = self:GetAttribute("type")
 	if t == "spell" then
 		local s = self:GetAttribute("spell")
@@ -140,9 +138,11 @@ local ACTION_PRE = [[
 			slot = self:GetAttribute("action")
 		end
 		if slot and slot > 0 then
+			-- set out of combat (RefreshMacros) for the "always" spells
+			always = control:GetAttribute("soft-always-" .. slot)
 			local kind, sid = GetActionInfo(slot)
 			if kind == "spell" and sid then
-				helpful = IsSpellHelpful(sid)
+				helpful = always or IsSpellHelpful(sid)
 			elseif kind == "item" and sid and control:GetAttribute("soft-items") then
 				helpful = IsHelpfulItem(sid)
 			elseif kind == "macro" then
@@ -151,6 +151,11 @@ local ACTION_PRE = [[
 				macro = control:GetAttribute("soft-macro-" .. slot)
 			end
 		end
+	end
+	-- A friendly real target wins over the soft target (optional), except
+	-- for the "always" spells (dispels).
+	if not always and control:GetAttribute("soft-friendwins") and UnitExists("target") and PlayerCanAssist("target") then
+		return
 	end
 	if (helpful or macro) and UnitExists(u) and PlayerCanAssist(u) then
 		if macro then
@@ -295,6 +300,7 @@ end
 
 local MACRO_LIMIT = 255 -- stay inside the normal macro length
 local macroSlots = {}   -- slot -> text now on the header
+local alwaysSlots = {}  -- slot -> true for the "always" spells (and macros casting them)
 local pendingMacros = false
 local macroQueued = false
 
@@ -302,8 +308,23 @@ local function Truthy(ok, v)
 	return ok and v and not IsSecret(v)
 end
 
+-- "!Greater Heal(Rank 2)" -> "Greater Heal"
+local function PlainName(what)
+	return what:gsub("^!", ""):gsub("%s*%(.-%)%s*$", ""):match("^%s*(.-)%s*$")
+end
+
+-- the "always" setting as a set of lower-case spell names
+local function AlwaysSet()
+	local set = {}
+	for name in tostring(Opt("always") or ""):gmatch("[^,]+") do
+		name = name:lower():match("^%s*(.-)%s*$")
+		if name ~= "" then set[name] = true end
+	end
+	return set
+end
+
 local function HelpfulName(cmd, what)
-	what = what:gsub("^!", ""):gsub("%s*%(.-%)%s*$", ""):match("^%s*(.-)%s*$")
+	what = PlainName(what)
 	if what == "" or tonumber(what) then return false end
 	if C_Spell and C_Spell.IsSpellHelpful and Truthy(pcall(C_Spell.IsSpellHelpful, what)) then return true end
 	if IsHelpfulSpell and Truthy(pcall(IsHelpfulSpell, what)) then return true end
@@ -315,16 +336,20 @@ local function HelpfulName(cmd, what)
 end
 
 -- macro body -> text with the placeholder unit, or nil if nothing to change
-local function SoftMacro(body)
+-- also returns true when one of the changed lines is an "always" spell
+local function SoftMacro(body, always)
 	if type(body) ~= "string" or IsSecret(body) then return end
-	local out, changed = {}, 0
+	local out, changed, forced = {}, 0, false
 	for line in (body .. "\n"):gmatch("(.-)\r?\n") do
 		local cmd, rest = line:match("^%s*(/%a+)%s+(.+)$")
 		local c = cmd and cmd:lower()
-		if (c == "/cast" or c == "/use") and rest:sub(1, 1) ~= "[" and not rest:find(";", 1, true)
-			and HelpfulName(c, rest) then
-			line = cmd .. " [@SOFTUNIT] " .. rest
-			changed = changed + 1
+		if (c == "/cast" or c == "/use") and rest:sub(1, 1) ~= "[" and not rest:find(";", 1, true) then
+			local isAlways = always and always[PlainName(rest):lower()]
+			if isAlways or HelpfulName(c, rest) then
+				line = cmd .. " [@SOFTUNIT] " .. rest
+				changed = changed + 1
+				forced = forced or isAlways or false
+			end
 		end
 		out[#out + 1] = line
 	end
@@ -332,16 +357,42 @@ local function SoftMacro(body)
 	local text = table.concat(out, "\n"):gsub("%s+$", "")
 	-- "@SOFTUNIT" becomes "@player" / "@party1" (2 shorter) at the press
 	if #text - 2 * changed > MACRO_LIMIT then return end
-	return text
+	return text, forced
 end
 
-local function SlotMacro(slot)
-	if GetActionInfo(slot) ~= "macro" then return end
+-- one action slot -> macro text (or nil), is-an-"always"-spell
+local function SlotSoft(slot, always, macrosOn)
+	local kind, id = GetActionInfo(slot)
+	if kind == "spell" then
+		if type(id) ~= "number" or not next(always) then return end
+		local name = (C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(id))
+			or (GetSpellInfo and GetSpellInfo(id))
+		if type(name) == "string" and not IsSecret(name) and always[name:lower()] then
+			return nil, true
+		end
+		return
+	end
+	if kind ~= "macro" or not macrosOn then return end
 	local getText = (C_ActionBar and C_ActionBar.GetActionText) or GetActionText
 	local name = getText and getText(slot)
 	if type(name) ~= "string" or IsSecret(name) or name == "" then return end
 	local _, _, body = GetMacroInfo(name)
-	return SoftMacro(body)
+	return SoftMacro(body, always)
+end
+
+local function SyncSlots(prefix, current, found)
+	for slot, old in pairs(current) do
+		if found[slot] ~= old then
+			header:SetAttribute(prefix .. slot, nil)
+			current[slot] = nil
+		end
+	end
+	for slot, v in pairs(found) do
+		if current[slot] ~= v then
+			header:SetAttribute(prefix .. slot, v)
+			current[slot] = v
+		end
+	end
 end
 
 local function RefreshMacros()
@@ -351,25 +402,19 @@ local function RefreshMacros()
 		return
 	end
 	pendingMacros = false
-	local found = {}
-	if Opt("on") and Opt("macros") then
+	local found, foundAlways = {}, {}
+	if Opt("on") then
+		local always, macrosOn = AlwaysSet(), Opt("macros")
 		for slot = 1, 180 do
-			local ok, text = pcall(SlotMacro, slot)
-			if ok and text then found[slot] = text end
+			local ok, text, isAlways = pcall(SlotSoft, slot, always, macrosOn)
+			if ok then
+				if text then found[slot] = text end
+				if isAlways then foundAlways[slot] = true end
+			end
 		end
 	end
-	for slot, old in pairs(macroSlots) do
-		if found[slot] ~= old then
-			header:SetAttribute("soft-macro-" .. slot, nil)
-			macroSlots[slot] = nil
-		end
-	end
-	for slot, text in pairs(found) do
-		if macroSlots[slot] ~= text then
-			header:SetAttribute("soft-macro-" .. slot, text)
-			macroSlots[slot] = text
-		end
-	end
+	SyncSlots("soft-macro-", macroSlots, found)
+	SyncSlots("soft-always-", alwaysSlots, foundAlways)
 end
 
 local function QueueMacros()
@@ -554,6 +599,8 @@ local OPTIONS = {
 		tip = "What a second press on the ally who is already your soft target does." },
 	{ key = "friendWins", cmd = "friendwins", type = "bool", name = "Friendly target beats the soft target",
 		tip = "On: while your real target is friendly, helpful spells go to them and the soft target waits. Off: the soft target always gets them." },
+	{ key = "always", cmd = "always", type = "text", name = "Spells that always use the soft target",
+		tip = "Spell names separated by commas (\"none\" for no spells). These go to the soft target even while your real target is friendly." },
 	{ key = "softSelf", cmd = "self", type = "bool", name = "Soft-pick yourself",
 		tip = "Off: LB + self targets you normally." },
 	{ key = "softPet", cmd = "pet", type = "bool", name = "Soft-pick your pet",
@@ -601,6 +648,11 @@ local function Clean(o, v)
 		for _, c in ipairs(o.choices) do
 			if c[1] == v then return true, v end
 		end
+	elseif o.type == "text" then
+		if type(v) == "string" and v ~= "" then
+			if v == "none" then return true, "" end
+			return true, v
+		end
 	elseif o.type == "color" then
 		local hex = type(v) == "string" and v:lower():match("^#?(%x+)$")
 		if hex and #hex == 8 then hex = hex:sub(3) end
@@ -623,6 +675,7 @@ local function Shown(o)
 	local v = Opt(o.key)
 	if o.type == "bool" then return v and "on" or "off" end
 	if o.type == "color" then return tostring(v):sub(3) end
+	if o.type == "text" and v == "" then return "none" end
 	return tostring(v)
 end
 
@@ -630,6 +683,7 @@ local function Usage(o)
 	if o.type == "bool" then return "on|off" end
 	if o.type == "number" then return o.min .. "-" .. o.max end
 	if o.type == "color" then return "rrggbb" end
+	if o.type == "text" then return "name, name, ...|none" end
 	local t = {}
 	for _, c in ipairs(o.choices) do t[#t + 1] = c[1] end
 	return table.concat(t, "|")
@@ -651,6 +705,7 @@ BuildPanel = function()
 				Add(CreateSettingsListSectionHeaderInitializer(o.header))
 				return
 			end
+			if o.type == "text" then return end -- slash only
 			if o.type == "color" and not Settings.CreateColorSwatch then return end -- slash only
 			local vtype = (o.type == "bool" and "boolean") or (o.type == "number" and "number") or "string"
 			local setting = Settings.RegisterProxySetting(category, "SoftTarget_" .. o.key, vtype, o.name,
@@ -730,8 +785,10 @@ SlashCmdList.SOFTTARGET = function(msg)
 	else
 		if not setupDone and not InCombatLockdown() then pcall(Setup) end
 		local c = header.counts or {}
-		local nMacros = 0
+		local nMacros, nAlways = 0, 0
 		for _ in pairs(macroSlots) do nMacros = nMacros + 1 end
+		for _ in pairs(alwaysSlots) do nAlways = nAlways + 1 end
+		Print(("Buttons with an always-soft spell: %d."):format(nAlways))
 		Print(("%s, sticky %s. Hooked %d targeting buttons and %d action buttons%s. Macros on the bar using the soft target: %d. Soft target: %s"):format(
 			Opt("on") and "on" or "off",
 			Opt("keep") and "on" or "off",

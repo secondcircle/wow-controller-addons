@@ -71,6 +71,7 @@ With raid-style party frames you are in the centre of the diamond. With the stan
 | `sticky on\|off` | on | On: the soft target stays until you pick someone else. Off: it is used up by the next helpful spell |
 | `again target\|clear\|keep` | target | What LB + the same ally a second time does: target them for real, clear the soft target, or nothing |
 | `friendwins on\|off` | on | While your real target is friendly, helpful spells go to them instead of the soft target |
+| `always name, name, ...` | the classic dispels and cures (Dispel Magic, Cure Disease, Cleanse, Remove Curse...) | Spells that go to the soft target even while your real target is friendly. `always none` for no spells. Slash command only |
 | `self on\|off` | on | LB + yourself is a soft pick (off = normal targeting) |
 | `pet on\|off` | on | LB + your pet is a soft pick (off = normal targeting) |
 | `items on\|off` | on | Helpful items on the action bar (bandages) use the soft target |
